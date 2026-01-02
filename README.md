@@ -2,10 +2,7 @@
 
 一个现代化的分卷压缩GUI程序，支持自定义分卷大小、密码保护和实时进度显示。
 
-
-## 打包好的程序已放在发行版中的beta标签内
-
-# 我的标题 <a href="https://example.com"><img src="https://github.com/user-attachments/assets/9c9adb5c-1213-4885-a363-39e04573be23" alt="https://github.com/CODMzhuzai/Split-Compression/releases" width="69" height="32"/></a>
+## 打包好的程序已放在发行版中的beta标签内 <a href="https://example.com"><img src="https://github.com/user-attachments/assets/9c9adb5c-1213-4885-a363-39e04573be23" alt="https://github.com/CODMzhuzai/Split-Compression/releases" width="60" height="32"/></a>
 
 <img width="1229" height="534" alt="发行版中的beta标签内" src="https://github.com/user-attachments/assets/1abf3aaf-1c3e-4aa8-a16e-717c18824904" />
 
