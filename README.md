@@ -1,6 +1,10 @@
-## Split-Compression
 ## Split Compression-分卷压缩
+
 一个现代化的分卷压缩GUI程序，支持自定义分卷大小、密码保护和实时进度显示。
+
+
+## 打包好的程序已放在发行版中的beta标签内
+<img width="1229" height="534" alt="发行版中的beta标签内" src="https://github.com/user-attachments/assets/1abf3aaf-1c3e-4aa8-a16e-717c18824904" />
 
 ## 功能特性
 
@@ -52,7 +56,8 @@ pip install pyqt5 pyzipper
 
 ## 界面预览
 
-![分卷压缩工具界面](界面预览.png)
+<img width="1202" height="832" alt="界面预览" src="https://github.com/user-attachments/assets/9a46f4fa-8eaf-4408-a916-4b22efadb88e" />
+
 
 ## 注意事项
 
