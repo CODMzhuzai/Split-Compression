@@ -16,8 +16,9 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor
 
 class CompressThread(QThread):
-    progress = pyqtSignal(int)
+    progress = pyqtSignal(float)
     current_file = pyqtSignal(str)
+    file_progress = pyqtSignal(float)  # 单个文件的进度信号（0-100.0）
     finished = pyqtSignal(bool, str)
     
     def __init__(self, source_path, output_dir, volume_size, password):
@@ -69,12 +70,15 @@ class CompressThread(QThread):
             total_size = self.get_total_size(self.source_path)
             files_list = self.get_files_list(self.source_path)
             
-            if total_size == 0:
+            if total_size == 0 or not files_list:
                 self.finished.emit(False, "源文件或文件夹为空")
                 return
             
             # 初始化进度
             processed_size = 0
+            
+            # 发送初始进度
+            self.progress.emit(0.0)
             
             # 创建临时完整ZIP文件
             temp_zip = f"{output_base}.temp.zip"
@@ -100,14 +104,51 @@ class CompressThread(QThread):
                     # 获取文件大小
                     file_size = os.path.getsize(file_path)
                     
-                    # 压缩文件
+                    # 初始化文件进度
+                    self.file_progress.emit(0.0)
+                    
+                    # 使用pyzipper的write方法写入文件，它会自动处理压缩
+                    # 对于大文件，我们使用分块读取来模拟进度更新
+                    buffer_size = 8192  # 8KB缓冲区
+                    bytes_processed = 0
+                    
+                    # 打开原始文件，模拟进度更新
+                    with open(file_path, 'rb') as f_in:
+                        # 先读取整个文件以获取总大小（已经获取过，但这里用于模拟）
+                        while True:
+                            # 读取一块数据（不实际使用，只是为了计算进度）
+                            buffer = f_in.read(buffer_size)
+                            if not buffer:
+                                break
+                            # 更新已处理字节数
+                            bytes_processed += len(buffer)
+                            
+                            # 计算当前模拟进度
+                            file_progress = (bytes_processed / file_size) * 100.0
+                            # 确保进度在0-100之间
+                            file_progress = max(0.0, min(100.0, file_progress))
+                            # 发送文件进度更新
+                            self.file_progress.emit(file_progress)
+                    
+                    # 实际写入文件
                     zipf.write(file_path, arcname)
                     
-                    # 更新进度，压缩阶段占90%进度
+                    # 文件压缩完成，确保发送100%进度
+                    self.file_progress.emit(100.0)
+                    
+                    # 更新已处理大小
                     processed_size += file_size
-                    # 压缩阶段只到90%，剩下10%留给分卷处理
-                    compress_progress = (processed_size / total_size) * 90.0
-                    progress = round(compress_progress, 1)
+                    
+                    # 计算当前总进度（使用100%表示完整压缩过程）
+                    current_progress = (processed_size / total_size) * 100.0
+                    
+                    # 确保进度值在0-100之间
+                    current_progress = max(0.0, min(100.0, current_progress))
+                    
+                    # 四舍五入到小数点后两位
+                    progress = round(current_progress, 2)
+                    
+                    # 发送总进度更新信号
                     self.progress.emit(progress)
             
             # 检查ZIP文件大小
@@ -117,7 +158,8 @@ class CompressThread(QThread):
             if zip_size <= self.volume_size:
                 final_zip = f"{output_base}.zip"
                 os.rename(temp_zip, final_zip)
-                self.progress.emit(100)
+                # 压缩完成，设置进度为100%
+                self.progress.emit(100.0)
                 self.finished.emit(True, f"压缩完成！输出位置：{final_zip}")
                 return
             
@@ -153,14 +195,9 @@ class CompressThread(QThread):
                 with open(volume_name, 'wb') as f:
                     f.write(volume_data)
                 volumes.append(volume_name)
-                
-                # 更新进度，分卷处理占10%进度（90%到100%）
-                volume_progress = 90.0 + ((i + 1) / num_volumes) * 10.0
-                progress = round(volume_progress, 1)
-                self.progress.emit(progress)
             
-            # 压缩完成
-            self.progress.emit(100)
+            # 压缩完成，设置进度为100%
+            self.progress.emit(100.0)
             self.finished.emit(True, f"压缩完成！输出位置：{output_base}.*")
         except Exception as e:
             self.finished.emit(False, f"压缩失败：{str(e)}")
@@ -236,7 +273,7 @@ class UpdateDownloadThread(QThread):
 class VolumeCompressor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.current_version = "1.01"  # 当前版本
+        self.current_version = "1.02"  # 当前版本
         self.init_ui()
         # 启动时检查更新
         self.check_for_updates()
@@ -336,15 +373,15 @@ class VolumeCompressor(QMainWindow):
         settings_group.setLayout(settings_layout)
         main_layout.addWidget(settings_group)
         
-        # 进度条
+        # 总进度条 - 使用0-100范围支持整数精度
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         self.progress_bar.setStyleSheet(self.get_progress_style())
-        # 设置进度条显示格式为带百分号的小数
-        self.progress_bar.setFormat("%p%")
-        # 设置进度条的最小值和最大值，支持小数
+        # 删除进度条显示格式，不显示任何文本
+        self.progress_bar.setFormat("")
+        # 使用0-100范围，支持1%精度
         self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(1000)
+        self.progress_bar.setMaximum(100)
         main_layout.addWidget(self.progress_bar)
         
         # 当前压缩文件标签
@@ -352,6 +389,17 @@ class VolumeCompressor(QMainWindow):
         self.current_file_label.setAlignment(Qt.AlignCenter)
         self.current_file_label.setStyleSheet("color: #333; font-style: italic;")
         main_layout.addWidget(self.current_file_label)
+        
+        # 单个文件进度条 - 显示当前文件的压缩进度，与主进度条保持相同大小
+        self.file_progress_bar = QProgressBar()
+        self.file_progress_bar.setValue(0)
+        self.file_progress_bar.setStyleSheet(self.get_progress_style())  # 使用与主进度条相同的样式
+        # 删除进度条显示格式，不显示任何文本
+        self.file_progress_bar.setFormat("")
+        # 使用0-100范围，支持1%精度
+        self.file_progress_bar.setMinimum(0)
+        self.file_progress_bar.setMaximum(100)
+        main_layout.addWidget(self.file_progress_bar)
         
         # 状态标签
         self.status_label = QLabel("就绪")
@@ -479,14 +527,32 @@ class VolumeCompressor(QMainWindow):
     def get_progress_style(self):
         return """
             QProgressBar {
-                border: none;
-                border-radius: 6px;
-                background-color: #e0e0e0;
-                height: 10px;
+                border: 1px solid #cccccc;
+                border-radius: 0px;
+                background-color: #f0f0f0;
+                height: 20px;
+                text-align: center;
+                font-size: 12px;
             }
             QProgressBar::chunk {
-                border-radius: 6px;
-                background-color: #007AFF;
+                border-radius: 0px;
+                background-color: #4CAF50;
+            }
+        """
+    
+    def get_file_progress_style(self):
+        return """
+            QProgressBar {
+                border: 1px solid #cccccc;
+                border-radius: 0px;
+                background-color: #f0f0f0;
+                height: 16px;
+                text-align: center;
+                font-size: 10px;
+            }
+            QProgressBar::chunk {
+                border-radius: 0px;
+                background-color: #2196F3;
             }
         """
     
@@ -555,6 +621,7 @@ class VolumeCompressor(QMainWindow):
         self.compress_thread = CompressThread(source_path, output_dir, volume_size, password)
         self.compress_thread.progress.connect(self.update_progress)
         self.compress_thread.current_file.connect(self.update_current_file)
+        self.compress_thread.file_progress.connect(self.update_file_progress)  # 连接单个文件进度信号
         self.compress_thread.finished.connect(self.compress_finished)
         self.compress_thread.start()
     
@@ -563,13 +630,28 @@ class VolumeCompressor(QMainWindow):
         self.current_file_label.setText(f"正在压缩：{filename}")
     
     def update_progress(self, value):
-        # 将浮点数进度值（0-100.0）转换为整数（0-1000）以显示一位小数
-        # 确保值在有效范围内，避免溢出错误
+        """更新总进度条"""
+        # 将浮点数进度值（0-100.0）转换为整数（0-100）以支持1%精度
         clamped_value = max(0.0, min(100.0, value))
-        progress_value = int(clamped_value * 10)
-        # 确保进度值在0-1000范围内
-        progress_value = max(0, min(1000, progress_value))
-        self.progress_bar.setValue(progress_value)
+        # 四舍五入到一位小数
+        progress_value = round(clamped_value, 1)
+        # 确保进度值在0-100范围内
+        progress_value = max(0.0, min(100.0, progress_value))
+        # 进度条使用整数范围0-100，直接转换为整数
+        self.progress_bar.setValue(int(round(progress_value)))
+        # 更新状态标签，显示当前进度值（一位小数）
+        self.status_label.setText(f"压缩中... {progress_value:.1f}%")
+    
+    def update_file_progress(self, value):
+        """更新单个文件进度条"""
+        # 将浮点数进度值（0-100.0）转换为整数（0-100）以支持1%精度
+        clamped_value = max(0.0, min(100.0, value))
+        # 四舍五入到一位小数
+        progress_value = round(clamped_value, 1)
+        # 确保进度值在0-100范围内
+        progress_value = max(0.0, min(100.0, progress_value))
+        # 进度条使用整数范围0-100，直接转换为整数
+        self.file_progress_bar.setValue(int(round(progress_value)))
     
     def compress_finished(self, success, message):
         self.compress_btn.setEnabled(True)
@@ -581,8 +663,9 @@ class VolumeCompressor(QMainWindow):
         else:
             QMessageBox.critical(self, "失败", message)
         
-        # 重置进度条为0
+        # 重置所有进度条为0
         self.progress_bar.setValue(0)
+        self.file_progress_bar.setValue(0)
     
     def clear_all(self):
         self.source_line.clear()
@@ -592,6 +675,7 @@ class VolumeCompressor(QMainWindow):
         self.password_check.setChecked(False)
         self.password_edit.clear()
         self.progress_bar.setValue(0)
+        self.file_progress_bar.setValue(0)  # 重置单个文件进度条
         self.current_file_label.setText("准备压缩...")
         self.status_label.setText("就绪")
     
