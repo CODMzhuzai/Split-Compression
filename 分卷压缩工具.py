@@ -2,6 +2,10 @@ import sys
 import os
 import pyzipper
 import shutil
+import requests
+import json
+import tempfile
+import zipfile
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar,
@@ -161,10 +165,81 @@ class CompressThread(QThread):
         except Exception as e:
             self.finished.emit(False, f"压缩失败：{str(e)}")
 
+# 更新检测线程
+class UpdateCheckThread(QThread):
+    update_available = pyqtSignal(str, str)  # 版本号, 下载链接
+    no_update = pyqtSignal()
+    error = pyqtSignal(str)
+    
+    def run(self):
+        try:
+            # 检测GitHub Release中的最新版本
+            url = "https://api.github.com/repos/CODMzhuzai/Split-Compression/releases/latest"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            release_data = response.json()
+            latest_version = release_data.get("tag_name", "")
+            
+            # 提取数字版本号（移除可能的前缀）
+            if latest_version.startswith("%"):
+                latest_version = latest_version[1:]
+            
+            # 获取下载链接
+            assets = release_data.get("assets", [])
+            download_url = None
+            for asset in assets:
+                if asset.get("name", "").endswith(".zip"):
+                    download_url = asset.get("browser_download_url")
+                    break
+            
+            if latest_version and download_url:
+                self.update_available.emit(latest_version, download_url)
+            else:
+                self.no_update.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+# 更新下载线程
+class UpdateDownloadThread(QThread):
+    progress = pyqtSignal(int)  # 进度值 (0-100)
+    finished = pyqtSignal(str)  # 下载的文件路径
+    error = pyqtSignal(str)
+    
+    def __init__(self, download_url, save_path):
+        super().__init__()
+        self.download_url = download_url
+        self.save_path = save_path
+    
+    def run(self):
+        try:
+            response = requests.get(self.download_url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get("content-length", 0))
+            downloaded_size = 0
+            
+            with open(self.save_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        if total_size > 0:
+                            progress = (downloaded_size / total_size) * 100
+                            self.progress.emit(int(progress))
+            
+            self.finished.emit(self.save_path)
+        except Exception as e:
+            self.error.emit(str(e))
+
 class VolumeCompressor(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.current_version = "1.01"  # 当前版本
         self.init_ui()
+        # 启动时检查更新
+        self.check_for_updates()
         
     def init_ui(self):
         # 设置窗口样式
@@ -302,6 +377,14 @@ class VolumeCompressor(QMainWindow):
         button_layout.addWidget(clear_btn)
         
         main_layout.addLayout(button_layout)
+        
+        # 版本号显示
+        version_layout = QHBoxLayout()
+        self.version_label = QLabel(f"版本：{self.current_version}")
+        self.version_label.setStyleSheet("color: #666; font-size: 12px;")
+        version_layout.addWidget(self.version_label)
+        version_layout.addStretch()  # 推到左边
+        main_layout.addLayout(version_layout)
         
         # 设置样式
         self.setStyleSheet(self.get_global_style())
@@ -511,6 +594,174 @@ class VolumeCompressor(QMainWindow):
         self.progress_bar.setValue(0)
         self.current_file_label.setText("准备压缩...")
         self.status_label.setText("就绪")
+    
+    def check_for_updates(self):
+        """检查更新"""
+        self.update_thread = UpdateCheckThread()
+        self.update_thread.update_available.connect(self.on_update_available)
+        self.update_thread.no_update.connect(self.on_no_update)
+        self.update_thread.error.connect(self.on_update_error)
+        self.update_thread.start()
+    
+    def compare_versions(self, version1, version2):
+        """比较版本号，返回True如果version1 < version2"""
+        try:
+            # 将版本号转换为浮点数进行比较
+            v1 = float(version1)
+            v2 = float(version2)
+            return v1 < v2
+        except ValueError:
+            return False
+    
+    def on_update_available(self, latest_version, download_url):
+        """发现新版本"""
+        if self.compare_versions(self.current_version, latest_version):
+            # 显示更新对话框，不可取消
+            reply = QMessageBox.information(
+                self,
+                "发现新版本",
+                f"当前版本：{self.current_version}\n最新版本：{latest_version}\n\n正在准备下载更新...",
+                QMessageBox.Ok,
+                QMessageBox.Ok
+            )
+            
+            if reply == QMessageBox.Ok:
+                self.download_update(latest_version, download_url)
+    
+    def on_no_update(self):
+        """没有新版本"""
+        # 只在调试时显示，实际运行时可以隐藏
+        # QMessageBox.information(self, "更新检查", "当前已是最新版本")
+        pass
+    
+    def on_update_error(self, error):
+        """更新检查错误"""
+        # 只在调试时显示，实际运行时可以隐藏
+        # QMessageBox.warning(self, "更新检查失败", f"检查更新时出错：{error}")
+        pass
+    
+    def download_update(self, latest_version, download_url):
+        """下载更新"""
+        # 创建更新下载对话框
+        self.update_progress_dialog = QWidget(self)
+        self.update_progress_dialog.setWindowTitle("更新中")
+        self.update_progress_dialog.setGeometry(200, 200, 400, 150)
+        self.update_progress_dialog.setWindowModality(Qt.ApplicationModal)  # 不可取消
+        
+        layout = QVBoxLayout()
+        
+        label = QLabel(f"正在下载更新 {latest_version}...")
+        layout.addWidget(label)
+        
+        self.update_progress_bar = QProgressBar()
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(0)
+        layout.addWidget(self.update_progress_bar)
+        
+        status_label = QLabel("0%")
+        status_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(status_label)
+        
+        self.update_progress_dialog.setLayout(layout)
+        self.update_progress_dialog.show()
+        
+        # 创建临时文件保存更新包
+        temp_dir = tempfile.gettempdir()
+        self.update_file = os.path.join(temp_dir, f"update_{latest_version}.zip")
+        
+        # 开始下载
+        self.download_thread = UpdateDownloadThread(download_url, self.update_file)
+        self.download_thread.progress.connect(self.update_progress_bar.setValue)
+        self.download_thread.progress.connect(lambda value: status_label.setText(f"{value}%"))
+        self.download_thread.finished.connect(self.on_update_downloaded)
+        self.download_thread.error.connect(self.on_update_download_error)
+        self.download_thread.start()
+    
+    def on_update_downloaded(self, file_path):
+        """更新下载完成"""
+        try:
+            # 关闭下载对话框
+            self.update_progress_dialog.close()
+            
+            # 解压更新包
+            temp_dir = tempfile.gettempdir()
+            extract_dir = os.path.join(temp_dir, "update_extract")
+            if not os.path.exists(extract_dir):
+                os.makedirs(extract_dir)
+            
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # 查找主程序文件
+            main_file = None
+            for root, dirs, files in os.walk(extract_dir):
+                for file in files:
+                    if file == "分卷压缩工具.exe":
+                        main_file = os.path.join(root, file)
+                        break
+                if main_file:
+                    break
+            
+            if main_file:
+                # 获取当前程序信息
+                current_exe = sys.executable
+                current_dir = os.path.dirname(current_exe)
+                
+                # 新程序路径（放在同一目录下）
+                new_exe = os.path.join(current_dir, "分卷压缩工具.exe")
+                
+                # 关闭当前程序并替换
+                QMessageBox.information(
+                    self,
+                    "更新完成",
+                    "更新已成功下载！程序将重启以应用更新。",
+                    QMessageBox.Ok,
+                    QMessageBox.Ok
+                )
+                
+                # 清理临时文件
+                os.remove(file_path)
+                
+                # 创建更新脚本
+                update_script = os.path.join(temp_dir, "update_script.bat")
+                with open(update_script, "w") as f:
+                    f.write(f"@echo off\n")
+                    f.write(f"echo 正在更新程序...\n")
+                    f.write(f"timeout /t 2 /nobreak >nul\n")
+                    # 替换旧版本
+                    f.write(f"if exist \"{current_exe}\" del /f /q \"{current_exe}\"\n")
+                    # 将新程序移动到当前程序位置
+                    f.write(f"copy /y \"{main_file}\" \"{new_exe}\"\n")
+                    # 删除备份文件（如果存在）
+                    f.write(f"if exist \"{current_exe}.bak\" del /f /q \"{current_exe}.bak\"\n")
+                    # 启动新程序
+                    f.write(f"start \"\" \"{new_exe}\"\n")
+                    # 清理自身
+                    f.write(f"del /f /q \"{update_script}\"\n")
+                    # 删除临时解压目录
+                    f.write(f"rd /s /q \"{extract_dir}\"\n")
+                
+                # 退出当前程序并运行更新脚本
+                QApplication.quit()
+                os.startfile(update_script)
+            else:
+                QMessageBox.critical(self, "更新失败", "未找到主程序文件")
+                # 清理临时文件
+                os.remove(file_path)
+                shutil.rmtree(extract_dir)
+        except Exception as e:
+            QMessageBox.critical(self, "更新失败", f"更新安装失败：{str(e)}")
+            # 清理临时文件
+            try:
+                os.remove(file_path)
+                shutil.rmtree(extract_dir)
+            except:
+                pass
+    
+    def on_update_download_error(self, error):
+        """更新下载错误"""
+        self.update_progress_dialog.close()
+        QMessageBox.critical(self, "下载失败", f"更新下载失败：{error}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
